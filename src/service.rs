@@ -40,7 +40,7 @@ impl SpamDetectionService {
         let new_res = Arc::new(move |p: Result<bool>| {
             match p {
                 Ok(p) => {
-                    println!("{}", p);
+                    completion_handler.success();
                 }
                 Err(ref e) => {
                     match *e.kind() {
@@ -59,7 +59,8 @@ impl SpamDetectionService {
                     }
                 }
             };
-//            res(p);
+
+            res(p);
         });
 
 
@@ -152,7 +153,7 @@ impl SpamDetectionService {
                         CompletionStatus::Retry(err) => {
                             // Wait before we request more work
                             //                                                   println!("{} tries", tries);
-                            std::thread::sleep(Duration::from_millis(2 << tries as u64));
+//                            std::thread::sleep(Duration::from_millis(2 << tries as u64));
                             self_ref.retry_prediction(path.clone(), res.clone());
                         }
                     }

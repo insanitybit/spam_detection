@@ -105,33 +105,45 @@ fn main() {
                 None
             }
         });
-    use std::sync::mpsc::channel;
 
 
-    let pool = threadpool::ThreadPool::new(4);
 
-    let (tx, rx) = channel();
+    let pool = threadpool::ThreadPool::new(32   );
+
+    let (tx, rx) = ::channel::unbounded();
 
     let mut workers = workers.into_iter().cycle();
 
+
+//    let mut sw = Stopwatch::new();
+//    sw.start();
+    let mut path_count = 0;
     for path in paths {
+        path_count += 1;
+        let tx = tx.clone();
         let path = path.clone();
 
-        let tx = tx.clone();
         let worker = workers.next().unwrap();
+
         pool.execute(move || {
             let tx = tx.clone();
             worker
                 .predict_with_cache(path.clone(),
                                     Arc::new(move |p| {
-                                        tx.send(((), ()));
-//                                        tx.send((format!("{:#?}", path), p));
+                                        let tx = tx.clone();
+//                                        let tx = tx.lock().unwrap();;
+                                        tx.send((path.clone(), p));
+                                        drop(tx);
                                     }));
         });
     }
 
-    for (path, p) in rx.recv() {
-        println!("{:#?} {:#?}", path, p);
+//    println!("{}", path_count);
+    drop(tx);
+    let mut done_counter = 0;
+    for (path, p) in rx {
+        if p.is_ok() {done_counter += 1; println!("completed {} of {}", done_counter, path_count)};
+        println!("path {:#?} p {:#?}", path, p);
     }
 
     println!("aa");
@@ -189,7 +201,6 @@ fn get_reader(system: SystemActor) -> EmailReaderActor {
         file_reader_workers.push(file_reader);
     }
 
-    println!("{:#?}", file_reader_workers.len());
     let file_reader_pool = move |self_ref, system|
         FileReaderPool::new(
             file_reader_workers.clone().into_iter(),

@@ -46,10 +46,10 @@ impl<T> FileReaderPool<T>
 
         let worker = self.workers.next().expect("No file reader worker available");
         if let Some(file) = self.cache.get(&path) {
-            println!("Cache hit");
+//            println!("Cache hit");
             res(Arc::new(Ok(file.clone())));
         } else {
-            println!("Cache miss");
+//            println!("Cache miss");
             worker.read_file(
                 path.clone(),
                 Arc::new(move |file| {
