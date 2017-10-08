@@ -1,0 +1,8 @@
+/target/
+**/*.rs.bk
+
+__pycache__/
+
+.idea/
+TRAINING/
+model_service/venv/

@@ -1,0 +1,42 @@
+[package]
+authors = ["insanitybit <insanitybit@gmail.com>"]
+name = "spam_detection"
+version = "0.1.0"
+
+[dependencies]
+byteorder = "*"
+derive_builder = "*"
+error-chain = "*"
+lru_time_cache = "0.7.0"
+mailparse = "*"
+rustlearn = "*"
+twox-hash = "*"
+walkdir = "*"
+stopwatch = "*"
+select = "0.4.2"
+futures = "*"
+rand = "*"
+
+uuid = { version = "0.4", features = ["serde", "v4"] }
+
+[dependencies.derive-aktor]
+branch = "ThreadBranch"
+git = "https://github.com/insanitybit/derive_aktor"
+
+[dependencies.aktors]
+git = "https://github.com/insanitybit/aktors"
+branch = "Rewrite"
+
+[dependencies.redis]
+version = "*"
+
+[dependencies.sentiment]
+git = "https://github.com/insanitybit/sentiment"
+
+[dependencies.channel]
+git = "https://github.com/stjepang/channel"
+rev = "949ce33946d9e4686386ebbbe022b71de9b20950"
+
+#[profile.release]
+#lto = true
+#debug = true
