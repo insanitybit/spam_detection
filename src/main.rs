@@ -23,6 +23,7 @@ extern crate twox_hash;
 extern crate byteorder;
 extern crate lru_time_cache;
 extern crate select;
+extern crate threadpool;
 
 macro_rules! random_panic {
     ($x:expr) => {
@@ -89,59 +90,56 @@ fn main() {
 
     let system = SystemActor::new();
 
-    let workers = get_workers(22, system.clone());
+    let workers: Vec<_> = (0..22).map(|_| gen_worker(system.clone())).collect();
+
+    let mut walker = WalkDir::new("./TRAINING/");
+    let paths = walker
+        .into_iter()
+        .filter_map(std::result::Result::ok)
+        .filter(|p| p.file_type().is_file())
+        .map(|s| s.path().to_owned())
+        .filter_map(|p| {
+            if p.extension() == Some(std::ffi::OsStr::new("eml")) {
+                Some(p)
+            } else {
+                None
+            }
+        });
+    use std::sync::mpsc::channel;
+
+
+    let pool = threadpool::ThreadPool::new(4);
+
+    let (tx, rx) = channel();
+
+    let mut workers = workers.into_iter().cycle();
+
+    for path in paths {
+        let path = path.clone();
+
+        let tx = tx.clone();
+        let worker = workers.next().unwrap();
+        pool.execute(move || {
+            let tx = tx.clone();
+            worker
+                .predict_with_cache(path.clone(),
+                                    Arc::new(move |p| {
+                                        tx.send(((), ()));
+//                                        tx.send((format!("{:#?}", path), p));
+                                    }));
+        });
+    }
+
+    for (path, p) in rx.recv() {
+        println!("{:#?} {:#?}", path, p);
+    }
+
     println!("aa");
     loop {
         std::thread::park();
     }
 }
 
-fn get_workers(count: usize, system: SystemActor) -> Vec<SpamDetectionServiceActor> {
-    let mut workers = Vec::with_capacity(count);
-
-    for _ in 0..count {
-        let service = gen_worker(system.clone());
-        workers.push(service);
-    }
-
-    let mut file_reader_workers = Vec::new();
-
-    for _ in 0..50 {
-        let file_reader =
-            move |self_ref, system| LocalFileReader::new(self_ref, system);
-        let file_reader = LocalFileReaderActor::new(file_reader, system.clone(),
-                                               Duration::from_secs(30));
-
-        file_reader_workers.push(file_reader);
-    }
-
-    println!("{:#?}", file_reader_workers.len());
-    let file_reader_pool = move |self_ref, system|
-        FileReaderPool::new(
-            file_reader_workers.clone().into_iter(),
-            self_ref,
-            system);
-
-    let file_reader_pool = FileReaderPoolActor::new(file_reader_pool, system.clone(),
-                                                    Duration::from_secs(30));
-
-
-    let w = workers.clone();
-    let email_reader = move |self_ref, system|
-        EmailReader::new(w.clone().into_iter(),
-                         file_reader_pool.clone(),
-                         self_ref,
-                         system);
-
-    let email_reader = EmailReaderActor::new(email_reader, system.clone(), Duration::from_secs(30));
-    email_reader.start("./TRAINING/".to_owned().into());
-
-    for worker in workers.clone() {
-        email_reader.request_next_file(worker.clone().id.as_ref().to_owned());
-    }
-
-    workers
-}
 
 fn gen_worker(system: SystemActor) -> SpamDetectionServiceActor {
     let prediction_cache =
@@ -164,16 +162,49 @@ fn gen_worker(system: SystemActor) -> SpamDetectionServiceActor {
             FeatureExtractionManager::new(mail_parser.clone(), sentiment_analyzer.clone(), self_ref, system);
     let extractor = FeatureExtractionManagerActor::new(extractor, system.clone(), Duration::from_secs(30));
 
+    let email_reader = get_reader(system.clone());
+
     let service =
         move |self_ref, system| SpamDetectionService::new(
             prediction_cache.clone(),
             extractor.clone(),
             model.clone(),
+            email_reader.clone(),
             self_ref,
             system
         );
 
     SpamDetectionServiceActor::new(service, system.clone(), Duration::from_secs(30))
+}
+
+fn get_reader(system: SystemActor) -> EmailReaderActor {
+    let mut file_reader_workers = Vec::new();
+
+    for _ in 0..50 {
+        let file_reader =
+            move |self_ref, system| LocalFileReader::new(self_ref, system);
+        let file_reader = LocalFileReaderActor::new(file_reader, system.clone(),
+                                                    Duration::from_secs(30));
+
+        file_reader_workers.push(file_reader);
+    }
+
+    println!("{:#?}", file_reader_workers.len());
+    let file_reader_pool = move |self_ref, system|
+        FileReaderPool::new(
+            file_reader_workers.clone().into_iter(),
+            self_ref,
+            system);
+
+    let file_reader_pool = FileReaderPoolActor::new(file_reader_pool, system.clone(),
+                                                    Duration::from_secs(30));
+
+    let email_reader = move |self_ref, system|
+        EmailReader::new(file_reader_pool.clone(),
+                         self_ref,
+                         system);
+
+    EmailReaderActor::new(email_reader, system.clone(), Duration::from_secs(30))
 }
 
 #[cfg(test)]
@@ -185,8 +216,5 @@ mod tests {
         let system = SystemActor::new();
 
         let worker = gen_worker(system);
-
-
-
     }
 }

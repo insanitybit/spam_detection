@@ -16,23 +16,24 @@ use extraction::*;
 
 use std::sync::Arc;
 
+type CloneableError = Arc<ErrorKind>;
+
 pub struct CompletionHandler<F>
-    where F: Fn(CompletionStatus) + Send + Sync + 'static + Send
+    where F: Fn(CompletionStatus) + Send + Sync + 'static
 {
     self_ref: CompletionHandlerActor,
     system: SystemActor,
     f: F,
-    tries: usize
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum CompletionStatus {
     /// Processed successfully
     Success,
     /// A transient error occurred
-    Retry(usize),
+    Retry(CloneableError),
     /// An unrecoverable Error occurred
-    Abort
+    Abort(CloneableError)
 }
 
 #[derive_actor]
@@ -43,30 +44,30 @@ impl<F> CompletionHandler<F>
         (self.f)(CompletionStatus::Success);
     }
 
-    pub fn retry(&self) {
-        (self.f)(CompletionStatus::Retry(self.tries + 1));
+    pub fn retry(&self, e: CloneableError) {
+        (self.f)(CompletionStatus::Retry(e));
     }
 
-    pub fn abort(&self) {
-        (self.f)(CompletionStatus::Abort);
+    pub fn abort(&self, e: CloneableError) {
+        (self.f)(CompletionStatus::Abort(e));
     }
 }
 
 impl<F> CompletionHandler<F>
     where F: Fn(CompletionStatus) + Send + Sync + 'static
 {
-    pub fn new(tries: usize, f: F, self_ref: CompletionHandlerActor, system: SystemActor) -> CompletionHandler<F> {
+    pub fn new(f: F, self_ref: CompletionHandlerActor, system: SystemActor) -> CompletionHandler<F> {
         CompletionHandler {
             self_ref,
             system,
             f,
-            tries
         }
     }
 
     fn on_timeout(&mut self) {
-        (self.f)(CompletionStatus::Retry(self.tries + 1))
+
     }
+
     fn on_error<T>(&mut self,
                    err: Box<std::any::Any + Send>,
                    msg: CompletionHandlerMessage,

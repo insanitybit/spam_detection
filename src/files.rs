@@ -16,6 +16,7 @@ use std::time::Duration;
 
 use errors::*;
 use email::*;
+use email_reader::*;
 use model::*;
 use extraction::*;
 use service::*;
@@ -26,8 +27,6 @@ use std::sync::Arc;
 use walkdir::{WalkDir, DirEntry};
 
 use std::collections::LinkedList;
-
-type FileResponse = std::sync::Arc<Fn(Arc<Vec<u8>>) + Send + Sync + 'static>;
 
 pub struct FileReaderPool<T>
     where T: Iterator<Item=LocalFileReaderActor> + Clone + Send + Sync + 'static
@@ -42,19 +41,21 @@ pub struct FileReaderPool<T>
 impl<T> FileReaderPool<T>
     where T: Iterator<Item=LocalFileReaderActor> + Clone + Send + Sync + 'static
 {
-    pub fn read_file(&mut self, path: PathBuf, res: FileResponse) {
+    pub fn read_file(&mut self, path: PathBuf, res: FileReadResult) {
         let self_ref = self.self_ref.clone();
 
         let worker = self.workers.next().expect("No file reader worker available");
         if let Some(file) = self.cache.get(&path) {
             println!("Cache hit");
-            res(file.clone());
+            res(Arc::new(Ok(file.clone())));
         } else {
             println!("Cache miss");
             worker.read_file(
                 path.clone(),
                 Arc::new(move |file| {
-                    self_ref.cache_file(path.clone(), file.clone());
+                    if let Ok(ref file) = *file.as_ref() {
+                        self_ref.cache_file(path.clone(), file.clone());
+                    }
                     res(file);
                 })
             );
@@ -75,7 +76,9 @@ impl<T> FileReaderPool<T>
             Arc::new(move |file| {
 //                random_panic!(10);
 //                random_latency!(10, 20);
-                self_ref.cache_file(path.clone(), file.clone());
+                if let Ok(ref file) = *file.as_ref() {
+                    self_ref.cache_file(path.clone(), file.clone());
+                }
             })
         );
     }
@@ -117,12 +120,14 @@ pub struct LocalFileReader
 #[derive_actor]
 impl LocalFileReader
 {
-    pub fn read_file(&mut self, path: PathBuf, res: FileResponse) {
+    pub fn read_file(&mut self, path: PathBuf, res: FileReadResult) {
         let mut file = File::open(&path)
             .expect(&format!("Could not open file at path {:#?}", path));
         let mut buf = Vec::with_capacity(10 * 1024);
-        file.read_to_end(&mut buf).unwrap();
-        res(Arc::new(buf));
+        match file.read_to_end(&mut buf).chain_err(|| "Failed to read file") {
+            Ok(_)   => res(Arc::new(Ok(Arc::new(buf)))),
+            Err(e)  => res(Arc::new(Err(e)))
+        }
     }
 }
 

@@ -16,6 +16,7 @@ stopwatch = "*"
 select = "0.4.2"
 futures = "*"
 rand = "*"
+threadpool = "*"
 
 uuid = { version = "0.4", features = ["serde", "v4"] }
 
