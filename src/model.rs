@@ -2,26 +2,23 @@ use derive_aktor::derive_actor;
 use aktors::actor::SystemActor;
 
 use std;
+use std::path::PathBuf;
 use std::time::Duration;
 use std::sync::Arc;
-use rustlearn::prelude::*;
-
-use rustlearn::ensemble::random_forest::Hyperparameters;
-use rustlearn::ensemble::random_forest::RandomForest;
-use rustlearn::datasets::iris;
-use rustlearn::trees::decision_tree;
 
 use lru_time_cache::LruCache;
 
 use errors::*;
 use extraction::Features;
 
+use rand::Rng;
 use redis::{self, Connection, Commands};
+use reqwest::Client;
 
 pub struct Model {
     self_ref: ModelActor,
     system: SystemActor,
-    model: RandomForest,
+    python_model: PythonModelActor,
     predictions: usize
 }
 
@@ -30,48 +27,21 @@ type Prediction = std::sync::Arc<Fn(Result<bool>) + Send + Sync + 'static>;
 #[derive_actor]
 impl Model {
     pub fn predict(&mut self, features: Features, res: Prediction) {
-        //        let data = Array::from(&vec![vec![features.sentiment_analysis.score,
-        //                                          features.sentiment_analysis.positive.score,
-        //                                          features.sentiment_analysis.negative.score]]);
         std::thread::sleep(Duration::from_millis(10));
-        self.predictions += 1;
-        //        println!("predict: {} {}", self.self_ref.id.clone(), self.predictions);
+
 
         res(Ok(true));
-        //        println!("{:#?}", data);
-        //        res(*self.model.predict(&data).expect("Failed to predict").data().iter().next().expect("prediction next unwrap") > 0.5);
     }
 }
 
 impl Model {
-    pub fn new(self_ref: ModelActor, system: SystemActor) -> Model {
-        let mut tree_params = decision_tree::Hyperparameters::new(3);
-        tree_params.min_samples_split(10)
-            .max_features(4);
-
-
-        //        let data = Array::from(&vec![vec![0.0, 1.0, 1.0],
-        //                                     vec![2.0, 3.0, 3.0]]);
-        //
-        //        let answers = Array::from(&vec![vec![0.0, 1.0, 1.0],
-        //                                        vec![2.0, 3.0, 3.0]]);
-
-        let mut model = Hyperparameters::new(tree_params, 10).build();
-        //        model.fit(&data, &answers);
-
+    pub fn new(self_ref: ModelActor,
+               system: SystemActor,
+               python_model: PythonModelActor) -> Model {
         Model {
             self_ref,
             system,
-            model,
-            predictions: 0
-        }
-    }
-
-    pub fn from_rf(model: RandomForest, self_ref: ModelActor, system: SystemActor) -> Model {
-        Model {
-            self_ref,
-            system,
-            model,
+            python_model,
             predictions: 0
         }
     }
@@ -83,6 +53,73 @@ impl Model {
                    msg: ModelMessage,
                    t: Arc<T>)
         where T: Fn(ModelActor, SystemActor) -> Model + Send + Sync + 'static
+    {
+        // t(self.self_ref.clone(), self.system.clone());
+    }
+}
+
+use std::process::{Child, Command};
+
+
+pub struct PythonModel {
+    python: Child,
+    client: Client,
+    path: PathBuf
+}
+
+#[derive_actor]
+impl PythonModel {
+    pub fn predict(&mut self, features: Features, res: Prediction) {
+        res(Ok(true));
+    }
+}
+
+impl PythonModel {
+    pub fn new(path: PathBuf) -> PythonModel {
+        let mut rng = ::rand::weak_rng();
+        let port = rng.gen_range(10000, 16000);
+        let python =
+            Command::new(path.to_str().unwrap())
+                .env("FLASK_APP", path.to_str().unwrap())
+                .arg("--port")
+                .arg(port.to_string())
+                .spawn()
+                .expect(&format!("Invalid path: {:#?}", path));
+
+        let client = Client::new();
+
+        let mut up = false;
+        for i in 0..10 {
+            std::thread::sleep(Duration::from_millis(2 << i));
+            if client.get(&format!("http://127.0.0.1:{}/health_check", port.to_string()))
+                .send()
+                .is_ok() {
+                println!("Connected to PythonModel");
+                up = true;
+                break;
+            } else {
+                println!("Not connected to PythonModel")
+            }
+        }
+
+        if !up {
+            panic!("Could not connect to Python service");
+        }
+
+        PythonModel {
+            python,
+            client,
+            path
+        }
+    }
+
+    fn on_timeout(&mut self) {}
+
+    fn on_error<T>(&mut self,
+                   err: Box<std::any::Any + Send>,
+                   msg: PythonModelMessage,
+                   t: Arc<T>)
+        where T: Fn(PythonModelActor, SystemActor) -> PythonModel + Send + Sync + 'static
     {
         // t(self.self_ref.clone(), self.system.clone());
     }

@@ -1,3 +1,4 @@
+#!/usr/bin/python3.6
 import pandas as pd
 
 
@@ -34,3 +35,18 @@ def predict(csv_features):
     p = forest.predict(features)
     print(p)
     return str(forest.predict(features)[0])
+
+@app.route('/health_check')
+def health_check():
+    return "UP"
+
+
+import argparse
+
+
+parser = argparse.ArgumentParser(description='Prediction service')
+parser.add_argument('--port', type=int, help='Port to bind to.', required=True)
+
+if __name__ == '__main__':
+    port = parser.parse_args().port
+    app.run(port=port)

@@ -7,22 +7,22 @@ extern crate derive_aktor;
 #[macro_use]
 extern crate error_chain;
 
-extern crate uuid;
 
 extern crate aktors;
-extern crate channel;
-extern crate rustlearn;
-extern crate rand;
-extern crate stopwatch;
-extern crate futures;
-extern crate sentiment as _sentiment;
-extern crate mailparse;
-extern crate walkdir;
-extern crate redis;
-extern crate twox_hash;
 extern crate byteorder;
+extern crate channel;
+extern crate futures;
 extern crate lru_time_cache;
+extern crate mailparse;
+extern crate rand;
+extern crate redis;
+extern crate reqwest;
 extern crate select;
+extern crate sentiment as _sentiment;
+extern crate stopwatch;
+extern crate twox_hash;
+extern crate uuid;
+extern crate walkdir;
 
 macro_rules! random_panic {
     ($x:expr) => {
@@ -66,6 +66,7 @@ use aktors::actor::SystemActor;
 use stopwatch::Stopwatch;
 use std::time::Duration;
 use walkdir::WalkDir;
+use std::collections::HashMap;
 
 use std::fs::File;
 use std::io::prelude::*;
@@ -89,14 +90,87 @@ fn main() {
 
     let system = SystemActor::new();
 
-    let workers = get_workers(22, system.clone());
-    println!("aa");
-    loop {
-        std::thread::park();
+    let mut walker = WalkDir::new("./TRAINING/");
+    let paths = walker
+        .into_iter()
+        .filter_map(std::result::Result::ok)
+        .filter(|p| p.file_type().is_file())
+        .map(|s| s.path().to_owned())
+        .filter(|p| p.extension() == Some(std::ffi::OsStr::new("eml")))
+        .map(|s| s)
+        .collect::<Vec<_>>();
+
+    let worker = get_workers(22, system.clone());
+
+    let (tx, rx) = channel::unbounded();
+    let mut path_count = 0;
+    let mut path_dups = HashMap::new();
+    for path in paths.into_iter() {
+        path_count += 1;
+        *path_dups.entry(path.clone()).or_insert(0) += 1;
+        let tx = tx.clone();
+        worker.add_file(path.clone(), Arc::new(move |prediction| {
+            println!("{:#?} prediction {:#?}", path, prediction);
+            tx.send((path.clone(), prediction));
+        }))
     }
+
+    drop(worker);
+
+    for (p, c) in path_dups {
+        if c > 1 {
+            println!("{:#?}", p);
+        }
+    }
+
+    let mut ok_count = HashMap::new();
+    let mut aborted = HashMap::new();
+    let mut retry_count = HashMap::new();
+
+    for (path, prediction) in rx {
+        if prediction.is_ok() {
+            let count = ok_count.entry(path.clone()).or_insert(0);
+            *count += 1;
+            let count = *count;
+            if count > 1 {
+                println!("ok_count > 1");
+            }
+        }
+
+        if let Err(e) = prediction {
+            match *e.kind() {
+                ErrorKind::RecoverableError(ref e) => {
+                    *retry_count.entry(path.clone()).or_insert(0) += 1;
+                }
+                ErrorKind::UnrecoverableError(ref e) => {
+                    let count = aborted.entry(path.clone()).or_insert(0);
+                    *count += 1;
+                    let count = *count;
+                    if count > 1 {
+                        println!("aborted > 1");
+                    }
+                }
+                ErrorKind::Msg(ref e) => {
+                    *retry_count.entry(path.clone()).or_insert(0) += 1;
+                }
+                _ => *retry_count.entry(path.clone()).or_insert(0) += 1,
+            }
+        }
+
+        println!("total count {} ok_count {} aborted {} tried {}",
+                 path_count,
+                 ok_count.len(),
+                 aborted.len(),
+                 retry_count.len());
+    }
+
+    println!("aa");
+//    loop {
+//        std::thread::park();
+//    }
 }
 
-fn get_workers(count: usize, system: SystemActor) -> Vec<SpamDetectionServiceActor> {
+fn get_workers(count: usize, system: SystemActor) -> EmailReaderActor {
     let mut workers = Vec::with_capacity(count);
 
     for _ in 0..count {
@@ -110,7 +184,7 @@ fn get_workers(count: usize, system: SystemActor) -> Vec<SpamDetectionServiceAct
         let file_reader =
             move |self_ref, system| LocalFileReader::new(self_ref, system);
         let file_reader = LocalFileReaderActor::new(file_reader, system.clone(),
-                                               Duration::from_secs(30));
+                                                    Duration::from_secs(30));
 
         file_reader_workers.push(file_reader);
     }
@@ -134,13 +208,13 @@ fn get_workers(count: usize, system: SystemActor) -> Vec<SpamDetectionServiceAct
                          system);
 
     let email_reader = EmailReaderActor::new(email_reader, system.clone(), Duration::from_secs(30));
-    email_reader.start("./TRAINING/".to_owned().into());
+    //    email_reader.start("./TRAINING/".to_owned().into());
+    //
+    //    for worker in workers {
+    //        email_reader.request_next_file(worker.clone().id.as_ref().to_owned());
+    //    }
 
-    for worker in workers.clone() {
-        email_reader.request_next_file(worker.clone().id.as_ref().to_owned());
-    }
-
-    workers
+    email_reader
 }
 
 fn gen_worker(system: SystemActor) -> SpamDetectionServiceActor {
@@ -156,7 +230,12 @@ fn gen_worker(system: SystemActor) -> SpamDetectionServiceActor {
         move |self_ref, system| SentimentAnalyzer::new(self_ref, system);
     let sentiment_analyzer = SentimentAnalyzerActor::new(sentiment_analyzer, system.clone(), Duration::from_secs(30));
 
-    let model = move |self_ref, system| Model::new(self_ref, system);
+    let python_model =
+        move |self_ref, system| PythonModel::new("./model_service/service/prediction_service.py".into());
+    let python_model = PythonModelActor::new(python_model, system.clone(), Duration::from_secs(30));
+
+    let model =
+            move |self_ref, system| Model::new(self_ref, system, python_model.clone());
     let model = ModelActor::new(model, system.clone(), Duration::from_secs(30));
 
     let extractor =
@@ -185,8 +264,5 @@ mod tests {
         let system = SystemActor::new();
 
         let worker = gen_worker(system);
-
-
-
     }
 }

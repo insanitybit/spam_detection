@@ -24,7 +24,7 @@ pub struct SpamDetectionService {
     model: ModelActor,
 }
 
-type PredictionResult = std::sync::Arc<Fn(Result<bool>) + Send + Sync + 'static>;
+pub type PredictionResult = std::sync::Arc<Fn(Result<bool>) + Send + Sync + 'static>;
 
 type PredErr = std::sync::Arc<Error>;
 

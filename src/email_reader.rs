@@ -2,7 +2,7 @@ use derive_aktor::derive_actor;
 use aktors::actor::SystemActor;
 
 use std;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::Hasher;
 use lru_time_cache::LruCache;
 
@@ -12,6 +12,7 @@ use byteorder::{ByteOrder, LittleEndian};
 use std::fs::File;
 use std::io::prelude::*;
 use std::time::Duration;
+use std::iter::FromIterator;
 
 use errors::*;
 use email::*;
@@ -31,8 +32,9 @@ pub struct EmailReader
 {
     self_ref: EmailReaderActor,
     system: SystemActor,
-    file_names: LinkedList<(PathBuf, usize)>,
+    file_names: LinkedList<(PathBuf, usize, PredictionResult)>,
     workers: HashMap<String, SpamDetectionServiceActor>,
+    available_workers: HashMap<String, SpamDetectionServiceActor>,
     file_reader: FileReaderPoolActor,
 }
 
@@ -42,47 +44,62 @@ type ByteVec = Vec<u8>;
 impl EmailReader
 {
     pub fn request_next_file(&mut self, id: String) {
-        let (path, tries) = match self.file_names.pop_front() {
+        let (path, tries, res) = match self.file_names.pop_front() {
             Some(p) => {
                 p
             }
             None => {
                 println!("No more files");
+                // If there's no more files, this worker has no work
+                let worker = match self.workers.get(&id) {
+                    Some(worker) => {self.available_workers.insert(id.clone(), worker.clone());},
+                    None => {
+                        println!("Failed to get worker with id: {}", id);
+                    }
+                };
+
                 return;
             }
         };
 
-        println!("fetched");
         self.fetch_next();
-        self.file_names.push_back((path.clone(), tries));
+
+        self.available_workers.remove(&id);
 
         let self_ref = self.self_ref.clone();
 
-        let completion_handler = self.gen_completion_handler(id.clone(), path.clone(), tries);
+        let completion_handler =
+            self.gen_completion_handler(id.clone(),
+                                        path.clone(),
+                                        res.clone(),
+                                        tries);
 
+        let res = res.clone();
         self.file_reader.read_file(
             path.clone(),
             Arc::new(move |buf| {
-                self_ref.send_work_by_id(buf, id.clone(), completion_handler.clone());
+                self_ref.send_work_by_id(buf,
+                                         id.clone(),
+                                         res.clone(),
+                                         completion_handler.clone());
             })
         );
     }
 
     pub fn fetch_next(&mut self) {
-        let (path, tries) = match self.file_names.pop_front() {
+        let (path, tries, res) = match self.file_names.pop_front() {
             Some(entry) => entry.clone(),
             None => return
         };
 
-        self.file_names.push_back((path.clone(), tries));
-
         self.file_reader.prefetch(path.clone());
+        self.file_names.push_back((path.clone(), tries, res));
     }
 
 
-    pub fn retry_file_by_path(&mut self, id: String, path: PathBuf, tries: usize) {
+    pub fn retry_file_by_path(&mut self, id: String, path: PathBuf, res: PredictionResult, tries: usize) {
         println!("retrying {:#?} tries {}", path, tries);
-        self.file_names.push_back((path, tries));
+        self.file_names.push_back((path, tries, res));
 
         self.request_next_file(id);
     }
@@ -90,6 +107,7 @@ impl EmailReader
     fn gen_completion_handler(&self,
                               id: String,
                               path: PathBuf,
+                              res: PredictionResult,
                               tries: usize) -> CompletionHandlerActor {
         let self_ref = self.self_ref.clone();
 
@@ -98,22 +116,23 @@ impl EmailReader
                 let self_ref = self_ref.clone();
                 let id = id.clone();
                 let path = path.clone();
+                let res = res.clone();
+
                 CompletionHandler::new(tries,
                                        move |status| {
                                            match status {
-                                               CompletionStatus::Success | CompletionStatus::Abort => {
+                                               CompletionStatus::Success => {
                                                    self_ref.request_next_file(id.clone());
                                                }
-                                               CompletionStatus::Retry(tries) => {
-                                                   // Wait before we request more work
-                                                   println!("{} tries", tries);
+                                               CompletionStatus::Abort(e) => {
+                                                   self_ref.request_next_file(id.clone());
+                                               }
+                                               CompletionStatus::Retry(e, tries) => {
                                                    std::thread::sleep(Duration::from_millis(2 << tries as u64));
                                                    if tries > 5 {
-                                                       println!("aborting after {} tries", tries);
                                                        self_ref.request_next_file(id.clone());
                                                    } else {
-                                                       //                                                       println!("{} tries", tries);
-                                                       self_ref.retry_file_by_path(id.clone(), path.clone(), tries);
+                                                       self_ref.retry_file_by_path(id.clone(), path.clone(), res.clone(), tries);
                                                    }
                                                }
                                            }
@@ -125,7 +144,7 @@ impl EmailReader
         return CompletionHandlerActor::new(c_handler, self.system.clone(), Duration::from_secs(30));
     }
 
-    pub fn send_work_by_id(&self, work: EmailBytes, id: String, completion_handler: CompletionHandlerActor) {
+    pub fn send_work_by_id(&self, work: EmailBytes, id: String, res: PredictionResult, completion_handler: CompletionHandlerActor) {
         let worker = match self.workers.get(&id) {
             Some(worker) => worker,
             None => {
@@ -138,41 +157,55 @@ impl EmailReader
 
         let self_ref = self.self_ref.clone();
 
-        worker.predict(work,
-                       Arc::new(move |p| {
-                           match p {
-                               Ok(p) => {
-                                   println!("{}", p);
-                                   completion_handler.success();
-                               }
-                               Err(e) => {
-                                   match *e.kind() {
-                                       ErrorKind::RecoverableError(ref f) => {
-                                           completion_handler.retry();
-                                       }
-                                       ErrorKind::UnrecoverableError(_) =>
-                                           completion_handler.abort(),
-                                       ref unknown_error => {
-                                           println!("UnknownError Occurred: {:#?}", unknown_error);
-                                           completion_handler.retry();
-                                       }
-                                   }
-                               }
-                           }
-                       }));
+        let res = res.clone();
+        worker.predict(work, Arc::new(move |p| {
+            match p {
+                Ok(p) => {
+                    completion_handler.success();
+                }
+                Err(ref e) => {
+                    match *e.kind() {
+                        ErrorKind::RecoverableError(ref e) => {
+                            completion_handler
+                                .retry(Arc::new(ErrorKind::RecoverableError(e.to_owned().into())));
+                        }
+                        ErrorKind::UnrecoverableError(ref e) => {
+                            completion_handler
+                                .abort(Arc::new(ErrorKind::UnrecoverableError(e.to_owned().into())));
+                        }
+                        ErrorKind::Msg(ref e) => {
+                            completion_handler
+                                .retry(Arc::new(e.as_str().into()));
+                        }
+                        _ => {
+                            completion_handler
+                                .retry(Arc::new("An unknown error occurred".into()));
+                        }
+                    }
+                }
+            };
+            res(p);
+        })
+        );
     }
 
-    pub fn start(&mut self, path: PathBuf) {
-        let mut walker = WalkDir::new(path);
-        let paths = walker
-            .into_iter()
-            .filter_map(std::result::Result::ok)
-            .filter(|p| p.file_type().is_file())
-            .map(|s| s.path().to_owned())
-            .filter(|p| p.extension() == Some(std::ffi::OsStr::new("eml")))
-            .map(|s| (s, 0));
+    pub fn add_file(&mut self, path: PathBuf, res: PredictionResult) {
+        // Add the file to our queue
+        self.file_names.push_back((path, 0, res));
 
-        self.file_names.extend(paths);
+        // If we have a worker who's ready, send it the work directly
+        let k = match self.available_workers.keys().next() {
+            Some(k) => k.to_owned(),
+            None => return
+        };
+
+        let worker = match self.available_workers.remove(&k) {
+            Some(w) => w.id.as_ref().to_owned(),
+            None => return
+        };
+
+        // If a worker is available immediately schedule it
+        self.request_next_file(worker);
     }
 }
 
@@ -198,7 +231,8 @@ impl EmailReader
             system,
             file_names: LinkedList::new(),
             file_reader,
-            workers: worker_map,
+            workers: worker_map.clone(),
+            available_workers: HashMap::from(worker_map)
         }
     }
 

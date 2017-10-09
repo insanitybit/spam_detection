@@ -12,10 +12,6 @@ use errors::*;
 use email::*;
 use html::*;
 
-use rustlearn::prelude::*;
-use rustlearn::ensemble::random_forest::Hyperparameters;
-use rustlearn::trees::decision_tree;
-
 #[derive(Clone)]
 #[derive(Builder)]
 #[builder(setter(into))]
@@ -23,6 +19,7 @@ pub struct Features {
     pub sentiment_analysis: Analysis,
     //    pub body_length: usize
 }
+
 
 pub struct FeatureExtractionManager {
     self_ref: FeatureExtractionManagerActor,
