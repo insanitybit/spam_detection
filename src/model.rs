@@ -61,6 +61,8 @@ use std::process::{Child, Command};
 
 
 pub struct PythonModel {
+    self_ref: PythonModelActor,
+    system: SystemActor,
     python: Child,
     client: Client,
     port: u16,
@@ -70,19 +72,45 @@ pub struct PythonModel {
 #[derive_actor]
 impl PythonModel {
     pub fn predict(&mut self, features: Features, res: Prediction) {
-        println!("poython pred");
-        if let Err(e) = self.client.get(&format!("http://127.0.0.1:{}/predict/1,2,3", self.port)).send() {
-            res(Err(ErrorKind::RecoverableError(
-                format!("Failed to predict {}", e).into())
-                .into()));
-        } else {
-            res(Ok(false));
+        let query = format!("{},{},{}",
+                            features.sentiment_analysis.positive_sentiment,
+                            features.sentiment_analysis.negative_sentiment,
+                            features.sentiment_analysis.sentiment_score);
+
+        let mut sw = ::stopwatch::Stopwatch::new();
+        sw.start();
+        let r = self.client.get(&format!("http://127.0.0.1:{}/predict/{}", self.port, query)).send();
+
+        match r {
+            Err(e) => {
+                res(Err(ErrorKind::RecoverableError(
+                    format!("Failed to predict {}", e).into())
+                    .into()));
+            }
+            Ok(mut r) => {
+//                println!("SERVER RESPONSE {:#?}", r);
+                use std::io::prelude::*;
+                let mut content = String::with_capacity(4);
+                r.read_to_string(&mut content);
+                let pred = if content == "T" {
+                    Ok(true)
+                } else if content == "F" {
+                    Ok(false)
+                } else {
+                    Err("Failed to parse python service response as boolean".into())
+                };
+
+                res(pred);
+            }
         }
+        println!("flask request {}ms", sw.elapsed_ms());
     }
 }
 
 impl PythonModel {
-    pub fn new(path: PathBuf) -> PythonModel {
+    pub fn new(self_ref: PythonModelActor,
+               system: SystemActor,
+               path: PathBuf) -> PythonModel {
         let mut rng = ::rand::weak_rng();
         let port: u16 = rng.gen_range(10000, 16000);
         let python =
@@ -114,6 +142,8 @@ impl PythonModel {
         }
 
         PythonModel {
+            self_ref,
+            system,
             python,
             client,
             port,

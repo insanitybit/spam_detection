@@ -18,7 +18,7 @@ use errors::*;
 use email::*;
 use model::*;
 use extraction::*;
-use service::*;
+use spam_detection_service::*;
 use state::*;
 
 use std::path::{Path, PathBuf};

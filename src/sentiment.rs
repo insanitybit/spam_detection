@@ -12,8 +12,14 @@ pub struct SentimentAnalyzer {
     system: SystemActor
 }
 
-// TODO: Make Analysis a result
-type SentimentResponse = std::sync::Arc<Fn(Result<Analysis>) + Send + Sync + 'static>;
+#[derive(Debug, Clone)]
+pub struct SentimentFeatures {
+    pub positive_sentiment: f32,
+    pub negative_sentiment: f32,
+    pub sentiment_score: f32
+}
+
+type SentimentResponse = std::sync::Arc<Fn(Result<SentimentFeatures>) + Send + Sync + 'static>;
 
 #[derive_actor]
 impl SentimentAnalyzer {
@@ -22,6 +28,12 @@ impl SentimentAnalyzer {
         random_panic!(10);
         random_latency!(10, 20);
         let analysis = analyze(phrase);
+
+        let analysis = SentimentFeatures {
+            positive_sentiment: analysis.positive.score,
+            negative_sentiment: analysis.negative.score,
+            sentiment_score: analysis.score,
+        };
 
         res(Ok(analysis));
     }
@@ -53,7 +65,7 @@ impl SentimentAnalyzer {
                     ErrorKind::UnrecoverableError(
                         "An unexpected error occurred in sentiment analyzer".into()).into())
                 );
-                
+
             },
         };
     }

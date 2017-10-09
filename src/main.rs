@@ -5,12 +5,17 @@ extern crate derive_builder;
 #[macro_use]
 extern crate derive_aktor;
 #[macro_use]
+extern crate diesel;
+#[macro_use]
+extern crate diesel_codegen;
+#[macro_use]
 extern crate error_chain;
 
 
 extern crate aktors;
 extern crate byteorder;
 extern crate channel;
+extern crate dotenv;
 extern crate futures;
 extern crate lru_time_cache;
 extern crate mailparse;
@@ -24,6 +29,20 @@ extern crate stopwatch;
 extern crate twox_hash;
 extern crate uuid;
 extern crate walkdir;
+
+//macro_rules! try_print_panic {
+//    ($x:expr) => {
+//        {
+////            if let Some(m) = $x.downcast_ref::<String>() {
+////                println!("It's a string({}): '{}'", string.len(), string);
+////            } else if let Some(m) = $x.downcast_ref::<&str>() {
+////                println!("It's a string({}): '{}'", string.len(), string);
+////            } else {
+////                println!("Not a string...");
+////            }
+//        }
+//    };
+//}
 
 macro_rules! random_panic {
     ($x:expr) => {
@@ -57,11 +76,13 @@ pub mod sentiment;
 pub mod email;
 pub mod extraction;
 pub mod model;
-pub mod service;
+pub mod spam_detection_service;
 pub mod state;
 pub mod email_reader;
 pub mod html;
 pub mod files;
+pub mod feature_storage;
+pub mod schema;
 
 use aktors::actor::SystemActor;
 use stopwatch::Stopwatch;
@@ -80,7 +101,7 @@ use sentiment::*;
 use email::*;
 use extraction::*;
 use model::*;
-use service::*;
+use spam_detection_service::*;
 use email_reader::*;
 use state::*;
 use files::*;
@@ -105,6 +126,10 @@ fn main() {
     let worker = get_workers(22, system.clone());
 
     let mut sw = Stopwatch::new();
+    sw.start();
+
+    let mut r_sw = Stopwatch::new();
+    r_sw.start();
     let (tx, rx) = channel::unbounded();
     let mut path_count = 0;
     let mut path_dups = HashMap::new();
@@ -118,7 +143,7 @@ fn main() {
         }));
         std::thread::sleep(Duration::from_millis(2));
     }
-
+    r_sw.stop();
     drop(worker);
 
     for (p, c) in path_dups {
@@ -132,7 +157,6 @@ fn main() {
     let mut retry_count = HashMap::new();
 
 
-    sw.start();
     for (path, prediction) in rx {
         if prediction.is_ok() {
             let count = ok_count.entry(path.clone()).or_insert(0);
@@ -173,7 +197,8 @@ fn main() {
         }
     }
 
-    println!("{} millis", sw.elapsed_ms());
+    println!("reading + processing took {} millis", sw.elapsed_ms());
+    println!("file reading took {} millis", r_sw.elapsed_ms());
     //    loop {
     //        std::thread::park();
     //    }
@@ -239,7 +264,7 @@ fn gen_worker(system: SystemActor) -> SpamDetectionServiceActor {
     let sentiment_analyzer = SentimentAnalyzerActor::new(sentiment_analyzer, system.clone(), Duration::from_secs(30));
 
     let python_model =
-        move |self_ref, system| PythonModel::new("./model_service/service/prediction_service.py".into());
+        move |self_ref, system| PythonModel::new(self_ref, system, "./model_service/service/prediction_service.py".into());
     let python_model = PythonModelActor::new(python_model, system.clone(), Duration::from_secs(30));
 
     let model =

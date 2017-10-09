@@ -28,13 +28,13 @@ forest = load_model(model_path)
 
 @app.route('/predict/<string:csv_features>')
 def predict(csv_features):
-    print(csv_features)
+    # print(csv_features)
     csv_features = StringIO(csv_features)
     features: pd.DataFrame = pd.read_csv(csv_features, names=['a','b','c'])
 
     p = forest.predict(features)
-    print(p)
-    return str(forest.predict(features)[0])
+    # print(p)
+    return str(forest.predict(features)[0])[0]
 
 @app.route('/health_check')
 def health_check():

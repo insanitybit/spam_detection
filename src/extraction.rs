@@ -4,7 +4,6 @@ use aktors::actor::SystemActor;
 use std;
 use std::time::Duration;
 use std::sync::Arc;
-use _sentiment::Analysis;
 
 use mailparse::*;
 use sentiment::*;
@@ -16,7 +15,7 @@ use html::*;
 #[derive(Builder)]
 #[builder(setter(into))]
 pub struct Features {
-    pub sentiment_analysis: Analysis,
+    pub sentiment_analysis: SentimentFeatures,
     //    pub body_length: usize
 }
 
@@ -137,7 +136,7 @@ impl<T> FeatureExtractor<T>
     }
 
     pub fn set_sentiment(&mut self,
-                         analysis: Analysis,
+                         analysis: SentimentFeatures,
                          res: FeatureExtraction) {
         self.features.sentiment_analysis(analysis);
 
