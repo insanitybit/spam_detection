@@ -29,8 +29,7 @@ impl Model {
     pub fn predict(&mut self, features: Features, res: Prediction) {
         std::thread::sleep(Duration::from_millis(10));
 
-
-        res(Ok(true));
+        self.python_model.predict(features, res);
     }
 }
 
@@ -64,20 +63,28 @@ use std::process::{Child, Command};
 pub struct PythonModel {
     python: Child,
     client: Client,
+    port: u16,
     path: PathBuf
 }
 
 #[derive_actor]
 impl PythonModel {
     pub fn predict(&mut self, features: Features, res: Prediction) {
-        res(Ok(true));
+        println!("poython pred");
+        if let Err(e) = self.client.get(&format!("http://127.0.0.1:{}/predict/1,2,3", self.port)).send() {
+            res(Err(ErrorKind::RecoverableError(
+                format!("Failed to predict {}", e).into())
+                .into()));
+        } else {
+            res(Ok(false));
+        }
     }
 }
 
 impl PythonModel {
     pub fn new(path: PathBuf) -> PythonModel {
         let mut rng = ::rand::weak_rng();
-        let port = rng.gen_range(10000, 16000);
+        let port: u16 = rng.gen_range(10000, 16000);
         let python =
             Command::new(path.to_str().unwrap())
                 .env("FLASK_APP", path.to_str().unwrap())
@@ -87,11 +94,11 @@ impl PythonModel {
                 .expect(&format!("Invalid path: {:#?}", path));
 
         let client = Client::new();
-
+        let url = format!("http://127.0.0.1:{}/health_check", port.to_string());
         let mut up = false;
-        for i in 0..10 {
+        for i in 0..15 {
             std::thread::sleep(Duration::from_millis(2 << i));
-            if client.get(&format!("http://127.0.0.1:{}/health_check", port.to_string()))
+            if client.get(&url)
                 .send()
                 .is_ok() {
                 println!("Connected to PythonModel");
@@ -109,6 +116,7 @@ impl PythonModel {
         PythonModel {
             python,
             client,
+            port,
             path
         }
     }
@@ -122,6 +130,12 @@ impl PythonModel {
         where T: Fn(PythonModelActor, SystemActor) -> PythonModel + Send + Sync + 'static
     {
         // t(self.self_ref.clone(), self.system.clone());
+    }
+}
+
+impl Drop for PythonModel {
+    fn drop(&mut self) {
+        self.python.kill();
     }
 }
 

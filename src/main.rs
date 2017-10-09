@@ -15,6 +15,7 @@ extern crate futures;
 extern crate lru_time_cache;
 extern crate mailparse;
 extern crate rand;
+extern crate rayon;
 extern crate redis;
 extern crate reqwest;
 extern crate select;
@@ -67,6 +68,7 @@ use stopwatch::Stopwatch;
 use std::time::Duration;
 use walkdir::WalkDir;
 use std::collections::HashMap;
+use rayon::prelude::*;
 
 use std::fs::File;
 use std::io::prelude::*;
@@ -102,6 +104,7 @@ fn main() {
 
     let worker = get_workers(22, system.clone());
 
+    let mut sw = Stopwatch::new();
     let (tx, rx) = channel::unbounded();
     let mut path_count = 0;
     let mut path_dups = HashMap::new();
@@ -112,14 +115,15 @@ fn main() {
         worker.add_file(path.clone(), Arc::new(move |prediction| {
             println!("{:#?} prediction {:#?}", path, prediction);
             tx.send((path.clone(), prediction));
-        }))
+        }));
+        std::thread::sleep(Duration::from_millis(2));
     }
 
     drop(worker);
 
     for (p, c) in path_dups {
         if c > 1 {
-            println!("{:#?}", p);
+            println!("DUPLICATED PATH {:#?}", p);
         }
     }
 
@@ -127,6 +131,8 @@ fn main() {
     let mut aborted = HashMap::new();
     let mut retry_count = HashMap::new();
 
+
+    sw.start();
     for (path, prediction) in rx {
         if prediction.is_ok() {
             let count = ok_count.entry(path.clone()).or_insert(0);
@@ -162,25 +168,44 @@ fn main() {
                  ok_count.len(),
                  aborted.len(),
                  retry_count.len());
+        if ok_count.len() + aborted.len() == path_count {
+            break
+        }
     }
 
-    println!("aa");
-//    loop {
-//        std::thread::park();
-//    }
+    println!("{} millis", sw.elapsed_ms());
+    //    loop {
+    //        std::thread::park();
+    //    }
 }
 
 fn get_workers(count: usize, system: SystemActor) -> EmailReaderActor {
     let mut workers = Vec::with_capacity(count);
 
-    for _ in 0..count {
-        let service = gen_worker(system.clone());
-        workers.push(service);
-    }
+    vec![(); count]
+        .par_iter()
+        .map(|_| gen_worker(system.clone()))
+        .collect_into(&mut workers);
 
+    let file_reader_pool = file_reader_pool(system.clone(), 16);
+
+    let w = workers.clone();
+    let email_reader = move |self_ref, system|
+        EmailReader::new(w.clone().into_iter(),
+                         file_reader_pool.clone(),
+                         self_ref,
+                         system);
+
+    let email_reader = EmailReaderActor::new(email_reader, system.clone(), Duration::from_secs(30));
+
+    email_reader
+}
+
+
+fn file_reader_pool(system: SystemActor, count: usize) -> FileReaderPoolActor {
     let mut file_reader_workers = Vec::new();
 
-    for _ in 0..50 {
+    for _ in 0..count {
         let file_reader =
             move |self_ref, system| LocalFileReader::new(self_ref, system);
         let file_reader = LocalFileReaderActor::new(file_reader, system.clone(),
@@ -196,25 +221,8 @@ fn get_workers(count: usize, system: SystemActor) -> EmailReaderActor {
             self_ref,
             system);
 
-    let file_reader_pool = FileReaderPoolActor::new(file_reader_pool, system.clone(),
-                                                    Duration::from_secs(30));
-
-
-    let w = workers.clone();
-    let email_reader = move |self_ref, system|
-        EmailReader::new(w.clone().into_iter(),
-                         file_reader_pool.clone(),
-                         self_ref,
-                         system);
-
-    let email_reader = EmailReaderActor::new(email_reader, system.clone(), Duration::from_secs(30));
-    //    email_reader.start("./TRAINING/".to_owned().into());
-    //
-    //    for worker in workers {
-    //        email_reader.request_next_file(worker.clone().id.as_ref().to_owned());
-    //    }
-
-    email_reader
+    FileReaderPoolActor::new(file_reader_pool, system.clone(),
+                             Duration::from_secs(30))
 }
 
 fn gen_worker(system: SystemActor) -> SpamDetectionServiceActor {
@@ -235,7 +243,7 @@ fn gen_worker(system: SystemActor) -> SpamDetectionServiceActor {
     let python_model = PythonModelActor::new(python_model, system.clone(), Duration::from_secs(30));
 
     let model =
-            move |self_ref, system| Model::new(self_ref, system, python_model.clone());
+        move |self_ref, system| Model::new(self_ref, system, python_model.clone());
     let model = ModelActor::new(model, system.clone(), Duration::from_secs(30));
 
     let extractor =
@@ -260,7 +268,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_name() {
+    fn integration_test() {
         let system = SystemActor::new();
 
         let worker = gen_worker(system);

@@ -51,10 +51,9 @@ impl SentimentAnalyzer {
             } => {
                 res(Err(
                     ErrorKind::UnrecoverableError(
-                        "An unexpected error occurred in sentiment analyzer".into(
-
-                        )).into())
+                        "An unexpected error occurred in sentiment analyzer".into()).into())
                 );
+                
             },
         };
     }
