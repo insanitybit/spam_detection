@@ -117,7 +117,7 @@ fn main() {
     // TODO: some separate place, should just be a matter of having a stopwatch on the sender
     // TODO: and then call it right before route_msg
 
-    if false {
+    if true {
         predict();
     } else {
         train();
@@ -237,7 +237,9 @@ fn predict() {
         *path_dups.entry(path.clone()).or_insert(0) += 1;
         let tx = tx.clone();
         worker.add_file(path.clone(), Arc::new(move |prediction| {
-            println!("{:#?} prediction {:#?}", path, prediction);
+            if let Ok(pred) = prediction {
+                println!("{:#?} {}", path, pred);
+            }
             tx.send((path.clone(), prediction));
         }));
         std::thread::sleep(Duration::from_millis(2));

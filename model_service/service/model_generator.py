@@ -11,17 +11,9 @@ parser = argparse.ArgumentParser(description='Generates and stores a model.')
 parser.add_argument('--output', type=str, help='Path to store the model.', default="./model")
 
 
-# def get_args() -> (str, str):
-#     args = parser.parse_args()
-#     training = args.data
-#     output = args.output
-#     return training, output
-
-
-def load_data() -> (pd.DataFrame, pd.Series):
+def load_data() -> (pd.DataFrame, pd.DataFrame):
     features = pd.read_sql_query('select * from "sentiment_features"', con=engine)
     labels = pd.read_sql_query('select * from "truth_values"', con=engine)
-
 
     features.drop(['id'], axis=1, inplace=True)
     labels.drop(['id'], axis=1, inplace=True)
@@ -30,8 +22,6 @@ def load_data() -> (pd.DataFrame, pd.Series):
 
 
 if __name__ == '__main__':
-    # data_path, output = get_args()
-
     features, labels = load_data()
 
     df = pd.merge(features, labels, on='hash', how='inner')
