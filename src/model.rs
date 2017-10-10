@@ -124,8 +124,8 @@ impl PythonModel {
         let client = Client::new();
         let url = format!("http://127.0.0.1:{}/health_check", port.to_string());
         let mut up = false;
-        for i in 0..15 {
-            std::thread::sleep(Duration::from_millis(2 << i));
+        for i in 0..55 {
+            std::thread::sleep(Duration::from_millis(2 * i));
             if client.get(&url)
                 .send()
                 .is_ok() {
@@ -173,7 +173,6 @@ pub struct PredictionCache {
     self_ref: PredictionCacheActor,
     system: SystemActor,
     cache: LruCache<Vec<u8>, bool>
-    //    connection: Connection
 }
 
 type GetResponse = std::sync::Arc<Fn(Result<Option<bool>>) + Send + Sync + 'static>;
@@ -201,9 +200,6 @@ impl PredictionCache {
 
 impl PredictionCache {
     pub fn new(self_ref: PredictionCacheActor, system: SystemActor) -> PredictionCache {
-        //        let client = redis::Client::open("redis://127.0.0.1/").unwrap();
-        //        let con = client.get_connection().unwrap();
-
         let time_to_live = std::time::Duration::from_secs(60);
         PredictionCache {
             self_ref,
@@ -220,6 +216,15 @@ impl PredictionCache {
                    t: Arc<T>)
         where T: Fn(PredictionCacheActor, SystemActor) -> PredictionCache + Send + Sync + 'static
     {
-        // t(self.self_ref.clone(), self.system.clone());
+        match msg {
+            PredictionCacheMessage::GetVariant { email_hash, res } => {
+                res(Err(
+                    ErrorKind::UnrecoverableError(
+                        "An unexpected error occurred in prediction cache".into()).into())
+                );
+
+            },
+            PredictionCacheMessage::SetVariant { .. } => (),
+        };
     }
 }

@@ -14,17 +14,18 @@ rustlearn = "*"
 twox-hash = "*"
 walkdir = "*"
 stopwatch = "*"
+bigdecimal = "*"
 select = "0.4.2"
 futures = "*"
 rand = "*"
 rayon = "*"
 reqwest = "0.8.0"
-
+postgres = "*"
 uuid = { version = "0.4", features = ["serde", "v4"] }
 
 [dependencies.diesel]
 version = "0.16.0"
-features = ["postgres"]
+features = ["postgres", "numeric"]
 
 [dependencies.diesel_codegen]
 version = "0.16.0"

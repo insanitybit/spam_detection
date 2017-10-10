@@ -13,12 +13,14 @@ extern crate error_chain;
 
 
 extern crate aktors;
+extern crate bigdecimal;
 extern crate byteorder;
 extern crate channel;
 extern crate dotenv;
 extern crate futures;
 extern crate lru_time_cache;
 extern crate mailparse;
+extern crate postgres;
 extern crate rand;
 extern crate rayon;
 extern crate redis;
@@ -76,6 +78,7 @@ pub mod sentiment;
 pub mod email;
 pub mod extraction;
 pub mod model;
+pub mod models;
 pub mod spam_detection_service;
 pub mod state;
 pub mod email_reader;
@@ -83,6 +86,7 @@ pub mod html;
 pub mod files;
 pub mod feature_storage;
 pub mod schema;
+pub mod model_training_service;
 
 use aktors::actor::SystemActor;
 use stopwatch::Stopwatch;
@@ -100,17 +104,112 @@ use errors::*;
 use sentiment::*;
 use email::*;
 use extraction::*;
+use feature_storage::*;
 use model::*;
 use spam_detection_service::*;
 use email_reader::*;
 use state::*;
 use files::*;
+use model_training_service::*;
 
 fn main() {
     // TODO: A macro where message timings (send/ receive duration) are automatically sent to
     // TODO: some separate place, should just be a matter of having a stopwatch on the sender
     // TODO: and then call it right before route_msg
 
+    if false {
+        predict();
+    } else {
+        train();
+    }
+
+    std::thread::park();
+}
+
+fn train() {
+    let system = SystemActor::new();
+
+    let mut walker = WalkDir::new("./TRAINING/");
+    let paths = walker
+        .into_iter()
+        .filter_map(std::result::Result::ok)
+        .filter(|p| p.file_type().is_file())
+        .map(|s| s.path().to_owned())
+        .filter(|p| p.extension() == Some(std::ffi::OsStr::new("eml")))
+        .map(|s| s)
+        .collect::<Vec<_>>();
+
+
+    let mail_parser =
+    move |self_ref, system| MailParser::new(self_ref, system);
+    let mail_parser = MailParserActor::new(mail_parser, system.clone(), Duration::from_secs(30));
+
+    let sentiment_analyzer =
+    move |self_ref, system| SentimentAnalyzer::new(self_ref, system);
+    let sentiment_analyzer = SentimentAnalyzerActor::new(sentiment_analyzer, system.clone(), Duration::from_secs(30));
+
+    let extractor =
+    move |self_ref, system|
+    FeatureExtractionManager::new(mail_parser.clone(), sentiment_analyzer.clone(), self_ref, system);
+    let extractor = FeatureExtractionManagerActor::new(extractor, system.clone(), Duration::from_secs(30));
+
+
+    let storage =
+    move |self_ref, system|
+    FeatureStore::new( self_ref, system);
+    let storage = FeatureStoreActor::new(storage, system.clone(), Duration::from_secs(30));
+
+    let trainer =
+    move |self_ref, system|
+    ModelTrainingService::new(extractor.clone(), storage.clone(), self_ref, system);
+    let trainer = ModelTrainingServiceActor::new(trainer, system.clone(), Duration::from_secs(30));
+
+
+    let truth_values = truth_values();
+
+
+    for path in paths.into_iter() {
+        let filename = path.file_name().expect("filename1");
+        let filename = filename.to_str().expect("filename2");
+
+        let truth = truth_values.get(filename).expect("truth");
+
+        let mut email = Vec::new();
+        let mut file = File::open(path.clone()).expect("open file");
+        file.read_to_end(&mut email);
+        trainer.train_model(Arc::new(email), *truth);
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+fn truth_values() -> HashMap<String, bool> {
+    let mut f = File::open("./TRAINING/SPAMTrain.label").unwrap();
+    let mut s = String::new();
+    f.read_to_string(&mut s);
+
+    let lines: Vec<_> = s.split("\n").collect::<Vec<_>>();
+    let mut map = HashMap::new();
+    for line in lines {
+        if line.is_empty() { continue }
+        // 0 = spam
+        let line: &str = line;
+        let mut s = line.split(" ");
+        let score = s.next().expect("score next");
+        let score = if score == "0" {
+            true
+        } else if score == "1" {
+            false
+        } else {
+            panic!("bad parse: {} {}", line, score);
+        };
+
+        let name = s.next().expect("name next");
+        map.insert(name.to_owned(), score);
+    }
+    map
+}
+
+fn predict() {
     let system = SystemActor::new();
 
     let mut walker = WalkDir::new("./TRAINING/");

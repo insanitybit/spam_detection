@@ -1,6 +1,6 @@
 #!/usr/bin/python3.6
 import pandas as pd
-
+import sys
 
 from flask import Flask
 from sklearn.ensemble import RandomForestClassifier
@@ -40,6 +40,10 @@ def predict(csv_features):
 def health_check():
     return "UP"
 
+@app.route('/die')
+def die():
+    sys.exit(1)
+    return
 
 import argparse
 

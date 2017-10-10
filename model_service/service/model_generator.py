@@ -3,34 +3,46 @@ import pickle
 import pandas as pd
 
 from sklearn.ensemble import RandomForestClassifier
+from sqlalchemy import create_engine
+
+engine = create_engine('postgres://spam_detector:spam_detector@localhost/spam_detection')
 
 parser = argparse.ArgumentParser(description='Generates and stores a model.')
-parser.add_argument('--data', type=str, help='Path to the extracted training data features.', required=True)
-parser.add_argument('--output', type=str, help='Path to store the model.', required=True)
+parser.add_argument('--output', type=str, help='Path to store the model.', default="./model")
 
 
-def get_args() -> (str, str):
-    args = parser.parse_args()
-    training = args.data
-    output = args.output
-    return training, output
+# def get_args() -> (str, str):
+#     args = parser.parse_args()
+#     training = args.data
+#     output = args.output
+#     return training, output
 
 
-def load_data(data_path: str) -> (pd.DataFrame, pd.Series):
-    all_data = pd.read_csv(data_path)
+def load_data() -> (pd.DataFrame, pd.Series):
+    features = pd.read_sql_query('select * from "sentiment_features"', con=engine)
+    labels = pd.read_sql_query('select * from "truth_values"', con=engine)
 
-    features = all_data.copy(deep=True).drop(['label'], axis=1)
-    labels = pd.Series(all_data['label'])
+
+    features.drop(['id'], axis=1, inplace=True)
+    labels.drop(['id'], axis=1, inplace=True)
+
     return features, labels
 
 
 if __name__ == '__main__':
-    data_path, output = get_args()
+    # data_path, output = get_args()
 
-    features, labels = load_data(data_path)
+    features, labels = load_data()
 
+    df = pd.merge(features, labels, on='hash', how='inner')
+
+    features = df.copy(deep=True).drop(['truth', 'hash'], axis=1)
+    labels = pd.Series(df['truth'])
+
+
+    print(labels)
     forest = RandomForestClassifier(n_estimators=10)
     forest = forest.fit(features, labels)
 
-    with open(output, 'wb') as f:
+    with open(parser.parse_args().output, 'wb') as f:
         pickle.dump(forest, f)
